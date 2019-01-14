@@ -69,10 +69,27 @@
 
 import collections
 import logging
+import requests
 
+from bs4 import BeautifulSoup
 from datetime import datetime
+from requests.adapters import HTTPAdapter
+from requests.packages.urllib3.util.retry import Retry
+
+from caom2 import SimpleObservation, Plane, Instrument, Target
+from caom2 import ObservationIntentType, Proposal, Telescope, EnergyBand
+from caom2 import Provenance, DataProductType, CalibrationLevel
+from caom2 import ProductType, ChecksumURI, ReleaseType, Artifact
+from caom2 import RefCoord, shape, SegmentType, Position, Energy
+from caom2 import Time as caom2_Time
+
+from caom2pipe import astro_composable as ac
+from caom2pipe import manage_composable as mc
 
 COLLECTION = 'GEMINI'  # name of CAOM2 collection
+SCHEME = 'gemini'
+ARCHIVE = 'GEM'
+
 observation_list = collections.OrderedDict()
 logger = logging.getLogger('caom2proxy')
 logger.setLevel(logging.DEBUG)
@@ -124,235 +141,218 @@ def get_observation(id):
     :return: observation corresponding to the id or None if such
     such observation does not exist
     """
-    raise NotImplementedError('GET observation')
-    file_url = ('https://archive.gemini.edu/jsonsummary/canonical/filepre=N20170616S0268')
-    obs_url = ('https://archive.gemini.edu/jsonsummary/canonical/GS-CAL20181216-1-069')
-    program_url = ('https://archive.gemini.edu/programinfo/GN-2016B-Q-23')
-    import requests
-    from requests.adapters import HTTPAdapter
-    from requests.packages.urllib3.util.retry import Retry
+    file_url = 'https://archive.gemini.edu/jsonsummary/canonical/filepre=N20170616S0268'
+    obs_url = 'https://archive.gemini.edu/jsonsummary/canonical/GS-CAL20181216-1-069'
+    program_url = 'https://archive.gemini.edu/programinfo/GN-2016B-Q-23'
+
+    # response = _query_endpoint(file_url)
+    # json_response = response.json()
+    # response.close
+    # obs = _parse_file_response(json_response, id)
+    #
+    # response = _query_endpoint(obs_url)
+    # json_response = response.json()
+    # response.close
+    # obs = _parse_obs(json_response, obs)
+    #
+    # response = _query_endpoint(program_url)
+    # obs = _parse_program(response.text, obs)
+    # response.close
+    #
+
+    response = _query_endpoint(obs_url)
+    json_response = response.json()
+    response.close
+    obs = _parse_obs_2(json_response, id)
+
+    response = _query_endpoint(program_url)
+    obs = _parse_program(response.text, obs)
+    response.close
+    return obs
+
+
+def _query_endpoint(endpoint_url):
     session = requests.Session()
     retry = Retry(total=10, read=10, connect=10, backoff_factor=0.5)
-    adapter = HTTPAdapter(max_retries=10)
+    adapter = HTTPAdapter(max_retries=retry)
     session.mount('http://', adapter)
     session.mount('https://', adapter)
-    r = session.get(file_url, timeout=20)
-    j = r.json()
-    obs = _parse_file(j)
-    r = session.get(obs_url, timeout=20)
-    j = r.json()
-    obs = _parse_obs(j, obs)
-    r = session.get(program_url, timeout=20)
-
-    obs = _parse_program()
+    r = session.get(endpoint_url, timeout=20)
+    return r
 
 
-def _parse_file_response(response):
-    release = response['release']
-    target = response['object']
-    mode = response['mode']
-    obstype = response['observation_type']
-    obsclass = response['observation_class']
-    reduction = response['reduction']
-    program_id = response['program_id']
-    # instrument = unicode(response['instrument'])
-    # telescope = unicode(response['telescope'])
-    instrument = response['instrument']
-    telescope = response['telescope']
-    return None
+def _parse_obs_2(response, obs_id):
+    data_label = _response_lookup(response, 'data_label')
+    if data_label is None:
+        logger.error(
+            'NULL data_label: processing skipped for {}'.format(obs_id))
+        return None
 
-    if not response['data_label']:
-        print('NULL data_label; processing skipped.\n')
-        return(0)
+    obs = SimpleObservation(collection=COLLECTION,
+                            observation_id=response['data_label'])
 
-    if not response['observation_id']:
-        print('NULL observation ID; processing skipped.\n')
-        return(0)
-
-    if not release:
-        print('NULL release date; processing skipped.\n')
-        return(0)
+    release = _response_lookup(response, 'release')
+    target = _response_lookup(response, 'object')
+    mode = _response_lookup(response, 'mode')
+    reduction = _response_lookup(response, 'reduction')
+    telescope = _response_lookup(response, 'telescope')
+    instrument = _response_lookup(response, 'instrument')
+    obsclass = _response_lookup(response, 'observation_class')
+    obstype = _response_lookup(response, 'observation_type')
+    spectroscopy = _response_lookup(response, 'spectroscopy')
+    program_id = _response_lookup(response, 'program_id')
+    filter_name = _response_lookup(response, 'filter_name')
+    types = _response_lookup(response, 'types')
+    ra = _response_lookup(response, 'ra')
+    dec = _response_lookup(response, 'dec')
+    ut_date_time = _response_lookup(response, 'ut_datetime')
+    exptime = _response_lookup(response, 'exposure_time')
+    file_name = _response_lookup(response, 'filename')
 
     # One NIRI file has a bad release date that breaks things
-
-    if release == '0001-03-31':
-        release = '2008-03-31'
+    release_date = None
+    if release is not None:
+        if release == '0001-03-31':
+            release = '2008-03-31'
+        release_date = datetime.strptime(release, '%Y-%m-%d')
 
     # In a number of instances there are bad data labels or other
     # metadata...
 
     # At least one observation, GN-CAL20100323-1-901, has quotes around
     # the data label which breaks things.  Hence the 'strip' below...
-    self.obs_id = unicode(obs['data_label']).strip('"')
+    obs.observation_id = obs.observation_id.strip('"')
 
     # Phoenix files with error in data label
-    if 'GS-2002A-DD-1-?' in obs['data_label']:
-        self.obs_id = obs['data_label'].replace('?', '11')
+    if 'GS-2002A-DD-1-?' in obs.observation_id:
+        obs.observation_id = obs.observation_id.replace('?', '11')
 
     # Bad data labels for some GMOS-S data
-    if 'BIAS/MBIAS/G-BIAS' in obs['data_label']:
-        self.obs_id = obs['data_label'].replace('BIAS/MBIAS/', '')
-    if '/NET/PETROHUE/DATAFLOW/' in obs['data_label']:
-        self.obs_id = obs['data_label'].replace('-/NET/PETROHUE/DATAFLOW/', '')
-    if '/EXPORT/HOME/SOS2/PREIMAGE/MPROC/' in obs['data_label']:
-        self.obs_id = obs['data_label'].replace('/EXPORT/HOME/SOS2/PREIMAGE/MPROC/', '')
+    if 'BIAS/MBIAS/G-BIAS' in obs.observation_id:
+        obs.observation_id = obs.observation_id.replace('BIAS/MBIAS/', '')
+    if '/NET/PETROHUE/DATAFLOW/' in obs.observation_id:
+        obs.observation_id = obs.observation_id.replace(
+            '-/NET/PETROHUE/DATAFLOW/', '')
+    if '/EXPORT/HOME/SOS2/PREIMAGE/MPROC/' in obs.observation_id:
+        obs.observation_id = obs.observation_id.replace(
+            '/EXPORT/HOME/SOS2/PREIMAGE/MPROC/', '')
 
     # OBJECT string too long in this file...
     # 'NGC6823Now exiting seqexec and restarting seqexec.dev -simtcs and lo'
-    if self.obs_id == 'GN-2002A-SV-78-68-007':
+    if obs.observation_id == 'GN-2002A-SV-78-68-007':
         target = 'NGC6823'
 
-    fits_name = obs['filename'].replace('.bz2', '')
-    print('File name: {}  Instrument: {}  Obs. ID: {}'.format(fits_name,
-                                                              instrument, self.obs_id))
+    fits_name = response['filename'].replace('.bz2', '')
 
-    release_date = datetime.strptime(unicode(release),
-                                     '%Y-%m-%d')
-
-    if 'North' in telescope:
-        geo_location = geolocation(-155.46906, 19.823806, 4213.0)
-    else:
-        geo_location = geolocation(-70.736693, -30.240750, 2722.0)
-
-        xmlfile = self.obs_id + '.xml'
-        xmlfh = open(xmlfile, 'w')
-
-        # Create a plane for the observation
-        pln = caom2.Plane(self.obs_id)
-
-        self.client = CAOM2RepoClient(net.Subject(netrc=True),
-                                      resource_id= u'ivo://cadc.nrc.ca/sc2repo')
-
-        # If the observation already exists in CAOM2 tables read it
-        # so that it can be updated.
-        try:
-            self.obs = self.client.get_observation(self.collection, self.obs_id)
-            self.obs_status = 'update'
-        except cadcutils.exceptions.NotFoundException as e:
-            # If the observation doesn't exist create it.
-            self.obs = caom2.SimpleObservation(self.collection, self.obs_id)
-            self.obs_status = 'create'
-
-        self.obs.instrument = caom2.Instrument(instrument)
-        self.obs.meta_release = release_date
-        if obstype:
-            self.obs.type = unicode(obstype)
-            if obstype == 'MASK':
-                if 'GN' in filename:
-                    telescope = unicode('Gemini-North')
-                else:
-                    telescope = unicode('Gemini-South')
-
-        if target:
-            self.obs.target = caom2.Target(target)
-        if obsclass == 'science':
-            self.obs.intent = caom2.ObservationIntentType.SCIENCE
-        elif not obsclass:
-            self.obs.intent = None
-        else:
-            self.obs.intent = caom2.ObservationIntentType.CALIBRATION
-        self.obs.proposal = caom2.Proposal(program_id)
-        self.obs.telescope = caom2.observation.Telescope(telescope,
-                                                         float(geo_location[0]),
-                                                         float(geo_location[1]),
-                                                         float(geo_location[2]))
-
-
-        # Create a plane for the observation.
-        # I'm setting the provenance 'reference' to a link that will take the
-        # user directly to the Gemini archive query result for the observation
-        # in question.
-
-        pln.provenance = caom2.Provenance(name=u'Gemini Observatory Data',
-                                          producer = u'Gemini Observatory', project = u'Gemini Archive',
-                                          reference = u'http://archive.gemini.edu/searchform/' +
-                                                      self.obs_id)
-        pln.data_release = release_date
-        pln.meta_release = release_date
-
-        if mode == 'imaging' or obstype == 'MASK':
-            pln.data_product_type = caom2.DataProductType.IMAGE
-        else:
-            pln.data_product_type = caom2.DataProductType.SPECTRUM
-
-        if reduction == 'RAW':
-            pln.calibration_level = caom2.CalibrationLevel.RAW_STANDARD
-        else:
-            pln.calibration_level = caom2.CalibrationLevel.CALIBRATED
-
-        # Create an artifact for the FITS file and add the part to the artifact
-
-        content_type = 'application/fits'
-        file_size = obs['data_size']
-        checksum = caom2.common.ChecksumURI('md5:' + obs['data_md5'])
-        if obstype == 'MASK':
-            product_type = caom2.ProductType.AUXILIARY
-        else:
-            product_type = caom2.ProductType.SCIENCE
-        uri = u'gemini:GEM/{}'.format(fits_name)
-        art = caom2.Artifact(uri, product_type, caom2.ReleaseType.DATA,
-                             content_length=file_size,
-                             content_type=unicode(content_type),
-                             content_checksum=checksum)
-        pln.artifacts.add(art)
-
-        # Create an artifact for the associated preview
-
-        content_type = 'image/jpeg'
-        file_size = None
-        checksum = None
-        product_type = caom2.ProductType.PREVIEW
-        preview_name = fits_name.replace('.fits', '.jpg')
-        uri = u'gemini:GEM/{}'.format(preview_name)
-        art = caom2.Artifact(uri, product_type, caom2.ReleaseType.DATA,
-                             content_length=file_size, content_type=unicode(content_type),
-                             content_checksum=checksum)
-        pln.artifacts.add(art)
-
-        # Finally, add the plane to the observation
-
-        self.obs.planes.add(pln)
-
-        # Write the XML output to the appropriate file to check
-        # that the format is valid...
-
-        obs_rw.ObservationWriter(validate=True).write(self.obs, out=xmlfile)
-        xmlfh.close()
-        os.remove(xmlfile)
-
-        # Put the observation in repository...
-        self.caom2repo()
-
-
-def _parse_obs(obs_stuff):
-    instrument = obs_stuff['instrument']
-    obsclass = obs_stuff['observation_class']
-    obstype = obs_stuff['observation_type']
-    mode = obs_stuff['mode']
-    spectroscopy = obs_stuff['spectroscopy']
-    program_id = obs_stuff['program_id']
-    bandpassname = obs_stuff['wavelength_band']
-    filter_name = obs_stuff['filter_name']
-    types = obs_stuff['types']
-    target = unicode(obs_stuff['object'])
-    ra = obs_stuff['ra']
-    dec = obs_stuff['dec']
-    ut_date_time = unicode(obs_stuff['ut_datetime'])
-    exptime = obs_stuff['exposure_time']
-    time_crpix = 0.5
+    # Create a plane for the observation
+    pln = Plane(obs.observation_id)
 
     # Determine energy band based on instrument name
 
-    if instrument in ['GMOS-N', 'GMOS-S', 'GRACES', 'bHROS', 'hrwfs']:
-        energy_band = caom2.EnergyBand['OPTICAL']
+    if (instrument is not None and instrument in ['GMOS-N', 'GMOS-S', 'GRACES',
+                                                  'bHROS', 'hrwfs']):
+        energy_band = EnergyBand['OPTICAL']
+        obs.instrument = Instrument(instrument)
     else:
-        energy_band = caom2.EnergyBand['INFRARED']
+        energy_band = EnergyBand['INFRARED']
+
+    obs.meta_release = release_date
+    if obstype is not None:
+        obs.type = obstype
+        if obstype == 'MASK':
+            if 'GN' in file_name:
+                telescope = 'Gemini-North'
+            else:
+                telescope = 'Gemini-South'
+
+    if telescope is not None and 'North' in telescope:
+        x, y, z = ac.get_location(19.823806, -155.46906, 4213.0)
+    else:
+        x, y, z = ac.get_location(-30.240750, -70.736693, 2722.0)
+
+    if 'NON_SIDEREAL' in types:
+        # Non-sidereal tracking -> setting moving target to "True"
+        moving_target = True
+    else:
+        moving_target = None
+    if target is not None and spectroscopy is not None:
+        if spectroscopy:
+            obs.target = Target(target, target_type='object',
+                            moving=moving_target)
+        else:
+            obs.target = Target(target, target_type='field',
+                            moving=moving_target)
+
+    if obsclass is None:
+        obs.intent = None
+    elif obsclass == 'science':
+        obs.intent = ObservationIntentType.SCIENCE
+    else:
+        obs.intent = ObservationIntentType.CALIBRATION
+    obs.proposal = Proposal(program_id)
+    obs.telescope = Telescope(telescope, x, y, z)
+
+    # Create a plane for the observation.
+    # I'm setting the provenance 'reference' to a link that will take the
+    # user directly to the Gemini archive query result for the observation
+    # in question.
+
+    pln.provenance = Provenance(name='Gemini Observatory Data',
+                                producer='Gemini Observatory',
+                                project='Gemini Archive',
+                                reference='http://archive.gemini.edu/searchform/' +
+                                          obs.observation_id)
+    pln.data_release = release_date
+    pln.meta_release = release_date
+
+    if ((mode is not None and mode == 'imaging') or
+            (obstype is not None and obstype == 'MASK')):
+        pln.data_product_type = DataProductType.IMAGE
+    else:
+        pln.data_product_type = DataProductType.SPECTRUM
+
+    if reduction is not None and reduction == 'RAW':
+        pln.calibration_level = CalibrationLevel.RAW_STANDARD
+    else:
+        pln.calibration_level = CalibrationLevel.CALIBRATED
+
+    # Create an artifact for the FITS file and add the part to the artifact
+
+    content_type = 'application/fits'
+    file_size = response['data_size']
+    checksum = ChecksumURI('md5:' + response['data_md5'])
+    if obstype == 'MASK':
+        product_type = ProductType.AUXILIARY
+    else:
+        product_type = ProductType.SCIENCE
+    uri = mc.build_uri(ARCHIVE, fits_name, SCHEME)
+    art = Artifact(uri, product_type, ReleaseType.DATA,
+                   content_length=file_size,
+                   content_type=content_type,
+                   content_checksum=checksum)
+    pln.artifacts.add(art)
+
+    # Create an artifact for the associated preview
+
+    content_type = 'image/jpeg'
+    file_size = None
+    checksum = None
+    product_type = ProductType.PREVIEW
+    preview_name = fits_name.replace('.fits', '.jpg')
+    uri = mc.build_uri(ARCHIVE, preview_name, SCHEME)
+    art = Artifact(uri, product_type, ReleaseType.DATA,
+                   content_length=file_size, content_type=content_type,
+                   content_checksum=checksum)
+    pln.artifacts.add(art)
+
+    # Finally, add the plane to the observation
+    obs.planes.add(pln)
 
     # At least one dark observation had a null exposure time in metadata
     # (FITS value was a large -ve number!). Setting to zero to get
     # something ingested.
 
-    if not exptime:
+    if exptime is None:
         exptime = 0.0
 
     if 'AZEL_TARGET' in types:
@@ -361,76 +361,22 @@ def _parse_obs(obs_stuff):
     else:
         azel = None
 
-    # Fetch the CAOM2 observation
-    observation = self.repo_client.get_observation(self.collection,
-                                                   self.obsID)
-
-    if 'NON_SIDEREAL' in types:
-        # Non-sidereal tracking -> setting moving target to "True"
-        moving_target = True
-    else:
-        moving_target = None
-
-    if spectroscopy:
-        observation.target = caom2.Target(target, target_type=u'object',
-                                          moving=moving_target)
-    else:
-        observation.target = caom2.Target(target, target_type=u'field',
-                                          moving=moving_target)
-
-    observation.proposal = caom2.Proposal(program_id)
-
-
-def _parse_program(program):
-    # program = r.text
-    soup = BeautifulSoup(program, 'lxml')
-    tds = soup.find_all('td')
-    if len(tds) > 0:
-        title = tds[1].contents[0].replace('\n', ' ')
-        pi_name = tds[3].contents[0]
-        observation.proposal.pi_name = pi_name
-        observation.proposal.title = title
-    r.close
-
-    # Early Gemini data did not have an OBSCLASS keyword.  Try to
-    # determine a value from the OBSTYPE keyword as well as the
-    # program ID.  Assume that caom2.Observation.intent is CALIBRATION
-    # if OBSCLASS is unknown and OBSTYPE is not OBJECT.
-
-    if not obsclass:
-        if obstype == 'OBJECT':
-            if 'CAL' not in program_id:
-                observation.intent = caom2.ObservationIntentType.SCIENCE
-            else:
-                observation.intent = caom2.ObservationIntentType.CALIBRATION
-        else:
-            observation.intent = caom2.ObservationIntentType.CALIBRATION
-    elif obsclass == 'science':
-        observation.intent = caom2.ObservationIntentType.SCIENCE
-    else:
-        observation.intent = caom2.ObservationIntentType.CALIBRATION
-
-    for plane in observation.planes.values():
+    for plane in obs.planes.values():
 
         # Add temporal information to the plane, assuming this
         # will be the same for each plane for the time being.
         # Approximate the polygon for the temporal information as
         # an interval derived from start/stop exposure times.
 
-        time_ref_coord = caom2.RefCoord(time_crpix, str2mjd(ut_date_time))
-        time_cf = caom2.CoordFunction1D(long(1), exptime/(3600.0*24.0),
-                                        time_ref_coord)
-        time = caom2.TemporalWCS(axis=caom2.CoordAxis1D(caom2.Axis(u'TIME',
-                                                                   u'd'), function=time_cf), timesys=u'UTC',
-                                 trefpos=u'TOPOCENTER', exposure=exptime, resolution=exptime)
         dim = 1
-        start = str2mjd(ut_date_time)
+        start = ac.get_datetime(ut_date_time).value
         stop = start + exptime/(3600.0 * 24.0)
-        bounds = caom2.shape.Interval(start, stop,
-                                      [caom2.shape.SubInterval(start, stop)])
-        plane.time = caom2.plane.Time(bounds=bounds, dimension=dim,
-                                      resolution=exptime, sample_size=exptime/(3600.0 * 24.0),
-                                      exposure=exptime)
+        bounds = shape.Interval(start, stop,
+                                [shape.SubInterval(start, stop)])
+        plane.time = caom2_Time(bounds=bounds, dimension=dim,
+                                resolution=exptime,
+                                sample_size=exptime / (3600.0 * 24.0),
+                                exposure=exptime)
 
         # Add spatial information if NOT AZ-EL coordinate system
         # and there is a valid RA value.  For now, assume a small
@@ -440,21 +386,19 @@ def _parse_program(program):
         if not azel and ra:
             points = []
             vertices = []
-            segment_type = caom2.SegmentType['MOVE']
-            #for x, y in ([0, 0], [1, 0], [1, 1], [0, 1 ]):
+            segment_type = SegmentType['MOVE']
             for x, y in ([0, 1], [1, 1], [1, 0], [0, 0 ]):
                 ra_pt = ra - 0.001*(0.5-float(x))
                 dec_pt = dec - 0.001*(0.5-float(y))
-                #ra_pt = ra - 0.001*float(x)
-                #dec_pt = dec - 0.001*float(y)
-                points.append(caom2.shape.Point(ra_pt,dec_pt))
-                vertices.append(caom2.shape.Vertex(ra_pt,dec_pt,segment_type))
-                segment_type = caom2.SegmentType['LINE']
-            vertices.append(caom2.shape.Vertex(ra,dec,
-                                               caom2.SegmentType['CLOSE']))
-            polygon = caom2.shape.Polygon(points=points,
-                                          samples=caom2.shape.MultiPolygon(vertices))
-            position = caom2.plane.Position(time_dependent=moving_target, bounds=polygon)
+                points.append(shape.Point(ra_pt,dec_pt))
+                vertices.append(shape.Vertex(ra_pt,dec_pt,segment_type))
+                segment_type = SegmentType['LINE']
+            vertices.append(shape.Vertex(ra, dec,
+                                         SegmentType['CLOSE']))
+            polygon = shape.Polygon(points=points,
+                                    samples=shape.MultiPolygon(vertices))
+            position = Position(time_dependent=moving_target,
+                                bounds=polygon)
             plane.position = position
 
 
@@ -462,16 +406,295 @@ def _parse_program(program):
         # plane, again assuming this is the same for each plane for
         # the time being.
 
-        plane.energy = caom2.plane.Energy()
+        plane.energy = Energy()
         plane.energy.em_band = energy_band
         plane.energy.bandpass_name = filter_name
 
-    obs_rw.ObservationWriter(validate=True).write(observation, out=xmlfile)
-    xmlfh.close()
-    #os.remove(xmlfile)
+    return obs
 
-    # Put the observation into the repository...
-    self.caom2repo(observation)
+
+def _parse_file_response(response, file_name):
+
+    data_label = _response_lookup(response, 'data_label')
+    if data_label is None:
+        logger.error(
+            'NULL data_label: processing skipped for {}'.format(file_name))
+        return None
+
+    obs = SimpleObservation(collection=COLLECTION,
+                            observation_id=response['data_label'])
+
+    release = _response_lookup(response, 'release')
+    target = _response_lookup(response, 'object')
+    mode = _response_lookup(response, 'mode')
+    obstype = _response_lookup(response, 'observation_type')
+    obsclass = _response_lookup(response, 'observation_class')
+    reduction = _response_lookup(response, 'reduction')
+    program_id = _response_lookup(response, 'program_id')
+    instrument = _response_lookup(response, 'instrument')
+    telescope = _response_lookup(response, 'telescope')
+
+    # One NIRI file has a bad release date that breaks things
+    release_date = None
+    if release is not None:
+        if release == '0001-03-31':
+            release = '2008-03-31'
+        release_date = datetime.strptime(release, '%Y-%m-%d')
+
+    # In a number of instances there are bad data labels or other
+    # metadata...
+
+    # At least one observation, GN-CAL20100323-1-901, has quotes around
+    # the data label which breaks things.  Hence the 'strip' below...
+    obs.observation_id = obs.observation_id.strip('"')
+
+    # Phoenix files with error in data label
+    if 'GS-2002A-DD-1-?' in obs.observation_id:
+        obs.observation_id = obs.observation_id.replace('?', '11')
+
+    # Bad data labels for some GMOS-S data
+    if 'BIAS/MBIAS/G-BIAS' in obs.observation_id:
+        obs.observation_id = obs.observation_id.replace('BIAS/MBIAS/', '')
+    if '/NET/PETROHUE/DATAFLOW/' in obs.observation_id:
+        obs.observation_id = obs.observation_id.replace(
+            '-/NET/PETROHUE/DATAFLOW/', '')
+    if '/EXPORT/HOME/SOS2/PREIMAGE/MPROC/' in obs.observation_id:
+        obs.observation_id = obs.observation_id.replace(
+            '/EXPORT/HOME/SOS2/PREIMAGE/MPROC/', '')
+
+    # OBJECT string too long in this file...
+    # 'NGC6823Now exiting seqexec and restarting seqexec.dev -simtcs and lo'
+    if obs.observation_id == 'GN-2002A-SV-78-68-007':
+        target = 'NGC6823'
+
+    fits_name = response['filename'].replace('.bz2', '')
+
+    # Create a plane for the observation
+    pln = Plane(obs.observation_id)
+
+    obs.instrument = Instrument(instrument)
+    obs.meta_release = release_date
+    if obstype is not None:
+        obs.type = obstype
+        if obstype == 'MASK':
+            if 'GN' in file_name:
+                telescope = 'Gemini-North'
+            else:
+                telescope = 'Gemini-South'
+
+    if telescope is not None and 'North' in telescope:
+        # geo_location = geolocation(-155.46906, 19.823806, 4213.0)
+        x, y, z = ac.get_location(19.823806, -155.46906, 4213.0)
+    else:
+        # geo_location = geolocation(-70.736693, -30.240750, 2722.0)
+        x, y, z = ac.get_location(-30.240750, -70.736693, 2722.0)
+
+    if target is not None:
+        obs.target = Target(target)
+    if obsclass is None:
+        obs.intent = None
+    elif obsclass == 'science':
+        obs.intent = ObservationIntentType.SCIENCE
+    else:
+        obs.intent = ObservationIntentType.CALIBRATION
+    obs.proposal = Proposal(program_id)
+    obs.telescope = Telescope(telescope, x, y, z)
+
+    # Create a plane for the observation.
+    # I'm setting the provenance 'reference' to a link that will take the
+    # user directly to the Gemini archive query result for the observation
+    # in question.
+
+    pln.provenance = Provenance(name='Gemini Observatory Data',
+                                producer='Gemini Observatory',
+                                project='Gemini Archive',
+                                reference='http://archive.gemini.edu/searchform/' +
+                                          obs.observation_id)
+    pln.data_release = release_date
+    pln.meta_release = release_date
+
+    if ((mode is not None and mode == 'imaging') or
+            (obstype is not None and obstype == 'MASK')):
+        pln.data_product_type = DataProductType.IMAGE
+    else:
+        pln.data_product_type = DataProductType.SPECTRUM
+
+    if reduction is not None and reduction == 'RAW':
+        pln.calibration_level = CalibrationLevel.RAW_STANDARD
+    else:
+        pln.calibration_level = CalibrationLevel.CALIBRATED
+
+    # Create an artifact for the FITS file and add the part to the artifact
+
+    content_type = 'application/fits'
+    file_size = response['data_size']
+    checksum = ChecksumURI('md5:' + response['data_md5'])
+    if obstype == 'MASK':
+        product_type = ProductType.AUXILIARY
+    else:
+        product_type = ProductType.SCIENCE
+    uri = mc.build_uri(ARCHIVE, fits_name, SCHEME)
+    art = Artifact(uri, product_type, ReleaseType.DATA,
+                   content_length=file_size,
+                   content_type=content_type,
+                   content_checksum=checksum)
+    pln.artifacts.add(art)
+
+    # Create an artifact for the associated preview
+
+    content_type = 'image/jpeg'
+    file_size = None
+    checksum = None
+    product_type = ProductType.PREVIEW
+    preview_name = fits_name.replace('.fits', '.jpg')
+    uri = mc.build_uri(ARCHIVE, preview_name, SCHEME)
+    art = Artifact(uri, product_type, ReleaseType.DATA,
+                   content_length=file_size, content_type=content_type,
+                   content_checksum=checksum)
+    pln.artifacts.add(art)
+
+    # Finally, add the plane to the observation
+    obs.planes.add(pln)
+    return obs
+
+
+def _response_lookup(response, lookup):
+    result = None
+    if lookup in response:
+        result = response[lookup]
+    return result
+
+
+def _parse_obs(response, observation):
+    instrument = _response_lookup(response, 'instrument')
+    obsclass = _response_lookup(response, 'observation_class')
+    obstype = _response_lookup(response, 'observation_type')
+    spectroscopy = _response_lookup(response, 'spectroscopy')
+    program_id = _response_lookup(response, 'program_id')
+    filter_name = _response_lookup(response, 'filter_name')
+    types = _response_lookup(response, 'types')
+    target = _response_lookup(response, 'object')
+    ra = _response_lookup(response, 'ra')
+    dec = _response_lookup(response, 'dec')
+    ut_date_time = _response_lookup(response, 'ut_datetime')
+    exptime = _response_lookup(response, 'exposure_time')
+
+    # Determine energy band based on instrument name
+
+    if (instrument is not None and instrument in ['GMOS-N', 'GMOS-S', 'GRACES',
+                                                  'bHROS', 'hrwfs']):
+        energy_band = EnergyBand['OPTICAL']
+    else:
+        energy_band = EnergyBand['INFRARED']
+
+    # At least one dark observation had a null exposure time in metadata
+    # (FITS value was a large -ve number!). Setting to zero to get
+    # something ingested.
+
+    if exptime is None:
+        exptime = 0.0
+
+    if 'AZEL_TARGET' in types:
+        # Az-El coordinate frame so no spatial WCS info.
+        azel = True
+    else:
+        azel = None
+
+    if 'NON_SIDEREAL' in types:
+        # Non-sidereal tracking -> setting moving target to "True"
+        moving_target = True
+    else:
+        moving_target = None
+
+    if spectroscopy is not None and spectroscopy:
+        observation.target = Target(target, target_type='object',
+                                    moving=moving_target)
+    else:
+        observation.target = Target(target, target_type='field',
+                                    moving=moving_target)
+
+    observation.proposal = Proposal(program_id)
+
+
+    # Early Gemini data did not have an OBSCLASS keyword.  Try to
+    # determine a value from the OBSTYPE keyword as well as the
+    # program ID.  Assume that caom2.Observation.intent is CALIBRATION
+    # if OBSCLASS is unknown and OBSTYPE is not OBJECT.
+
+    if not obsclass:
+        if obstype == 'OBJECT':
+            if 'CAL' not in program_id:
+                observation.intent = ObservationIntentType.SCIENCE
+            else:
+                observation.intent = ObservationIntentType.CALIBRATION
+        else:
+            observation.intent = ObservationIntentType.CALIBRATION
+    elif obsclass == 'science':
+        observation.intent = ObservationIntentType.SCIENCE
+    else:
+        observation.intent = ObservationIntentType.CALIBRATION
+
+    for plane in observation.planes.values():
+
+        # Add temporal information to the plane, assuming this
+        # will be the same for each plane for the time being.
+        # Approximate the polygon for the temporal information as
+        # an interval derived from start/stop exposure times.
+
+        dim = 1
+        start = ac.get_datetime(ut_date_time).value
+        stop = start + exptime/(3600.0 * 24.0)
+        bounds = shape.Interval(start, stop,
+                                [shape.SubInterval(start, stop)])
+        plane.time = caom2_Time(bounds=bounds, dimension=dim,
+                                resolution=exptime,
+                                sample_size=exptime / (3600.0 * 24.0),
+                                exposure=exptime)
+
+        # Add spatial information if NOT AZ-EL coordinate system
+        # and there is a valid RA value.  For now, assume a small
+        # 0.001 degree square footprint centered on the RA/Dec values
+        # provided in Gemini metadata
+
+        if not azel and ra:
+            points = []
+            vertices = []
+            segment_type = SegmentType['MOVE']
+            for x, y in ([0, 1], [1, 1], [1, 0], [0, 0 ]):
+                ra_pt = ra - 0.001*(0.5-float(x))
+                dec_pt = dec - 0.001*(0.5-float(y))
+                points.append(shape.Point(ra_pt,dec_pt))
+                vertices.append(shape.Vertex(ra_pt,dec_pt,segment_type))
+                segment_type = SegmentType['LINE']
+            vertices.append(shape.Vertex(ra, dec,
+                                         SegmentType['CLOSE']))
+            polygon = shape.Polygon(points=points,
+                                    samples=shape.MultiPolygon(vertices))
+            position = Position(time_dependent=moving_target,
+                                bounds=polygon)
+            plane.position = position
+
+
+        # Add what energy information Gemini metadata provides to the
+        # plane, again assuming this is the same for each plane for
+        # the time being.
+
+        plane.energy = Energy()
+        plane.energy.em_band = energy_band
+        plane.energy.bandpass_name = filter_name
+
+    return observation
+
+
+def _parse_program(program, observation):
+    soup = BeautifulSoup(program, 'lxml')
+    tds = soup.find_all('td')
+    if len(tds) > 0:
+        title = tds[1].contents[0].replace('\n', ' ')
+        pi_name = tds[3].contents[0]
+        observation.proposal.pi_name = pi_name
+        observation.proposal.title = title
+    return observation
 
 
 def _initialize_content():
