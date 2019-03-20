@@ -73,18 +73,13 @@ import os
 import sys
 import tempfile
 
-from datetime import datetime
-from datetime import timezone
-
 from caom2pipe import manage_composable as mc
 
 import gem2caom2
 from gem2caom2 import APPLICATION, COLLECTION, SCHEME, ARCHIVE, GemName
-from gem2caom2 import main_app as gem_main_app
+from gem2caom2 import GemObsFileRelationship
 
-# COLLECTION = 'GEMINI'  # name of CAOM2 collection
-# SCHEME = 'gemini'
-# ARCHIVE = 'GEM'
+HEADER_URL = 'https://archive.gemini.edu/fullheader/'
 
 # in-memory structure that contains the obs-id, last modified information
 # by timestamp, making it possible to identify time-bounded lists of
@@ -96,6 +91,9 @@ observation_list = collections.OrderedDict()
 observation_id_list = {}
 logger = logging.getLogger('caom2proxy')
 logger.setLevel(logging.DEBUG)
+# use lazy initialization to read in the Gemini-supplied file, and
+# make it's content into an in-memory searchable collection.
+gofr = None
 
 
 def list_observations(start=None, end=None, maxrec=None):
@@ -118,21 +116,11 @@ def list_observations(start=None, end=None, maxrec=None):
     to support this endpoint query.
     """
 
-    # use lazy initialization to read in the Gemini-supplied file, and
-    # make it's content into an in-memory searchable collection.
-    if len(observation_list) < 1:
-        _initialize_content()
+    global gofr
+    if gofr == None:
+        gofr = GemObsFileRelationship('/app/data/from_paul.txt')
 
-    if start is not None and end is not None:
-        temp = _subset(start.timestamp(), end.timestamp())
-    elif start is not None:
-        temp = _subset(start.timestamp(), datetime.now().timestamp())
-    elif end is not None:
-        temp = _subset(0, end.timestamp())
-    else:
-        temp = _subset(0, datetime.now().timestamp())
-    if maxrec is not None:
-        temp = temp[:maxrec]
+    temp = gofr.subset(start, end, maxrec)
     for ii in temp:
         yield '{}\n'.format(ii)
 
@@ -145,10 +133,9 @@ def get_observation(obs_id):
     such observation does not exist
     """
 
-    # use lazy initialization to read in the Gemini-supplied file, and
-    # make its content into an in-memory searchable collection.
-    if len(observation_list) < 1:
-        _initialize_content()
+    global gofr
+    if gofr == None:
+        gofr = GemObsFileRelationship('/app/data/from_paul.txt')
 
     if obs_id not in observation_id_list:
         logger.error(
@@ -158,53 +145,43 @@ def get_observation(obs_id):
     # query Gemini Archive for file headers based on the file id (most reliable
     # endpoint
 
-    file_names = observation_id_list[obs_id]
-    file_urls = []
-    for file_name in file_names:
-        file_urls.append(
-            'https://archive.gemini.edu/fullheader/{}'.format(file_name))
+    # file_names = observation_id_list[obs_id]
+    # file_names = gofr.get_file_names(obs_id)
+    # file_urls = []
+    # for file_name in file_names:
+    #     file_urls.append(
+    #         'https://archive.gemini.edu/fullheader/{}'.format(file_name))
 
-    obs = _invoke_gem2caom2(file_urls, obs_id, file_names)
+    obs = _invoke_gem2caom2(obs_id)
     if obs is None:
         logger.error('Could not create observation for {}'.format(obs_id))
         return None
     return obs
 
 
-def _invoke_gem2caom2(external_urls, obs_id, input_file_names):
+def _invoke_gem2caom2(obs_id):
     try:
         plugin = os.path.join(gem2caom2.__path__[0], 'main_app.py')
         logger.error(plugin)
         output_temp_file = tempfile.NamedTemporaryFile(delete=False)
-        if len(input_file_names) > 1:
-            temp = []
-            for file_name in input_file_names:
-                file_id = GemName.remove_extensions(file_name)
-                if file_id.endswith('m'):
-                    product_id = 'intensity'
-                elif file_id.endswith('i'):
-                    product_id = 'norm_intensity'
-                else:
-                    product_id = obs_id
-                temp.append(
-                    mc.get_lineage(ARCHIVE, product_id, file_name, SCHEME))
-            lineage = ' '.join(i for i in temp)
+        command_line_bits = _make_gem2caom2_args(obs_id)
+        if len(command_line_bits) == 1:
+            sys.argv = ('{} --no_validate --observation {} '
+                        '--external_url {} '
+                        '--plugin {} --module {} --out {} --lineage {}'.
+                        format(APPLICATION, command_line_bits[0].obs_id,
+                               command_line_bits[0].urls, plugin, plugin,
+                               output_temp_file.name,
+                               command_line_bits[0].lineage)).split()
+            logger.error(sys.argv)
+            gem2caom2.main_app2()
+            obs = mc.read_obs_from_file(output_temp_file.name)
+            os.unlink(output_temp_file.name)
+            return obs
         else:
-            lineage = mc.get_lineage(ARCHIVE, obs_id, input_file_names[0],
-                                     SCHEME)
-        external_url = ' '.join(i for i in external_urls)
-
-        sys.argv = ('{} --no_validate --observation {} {} '
-                    '--external_url {} '
-                    '--plugin {} --module {} --out {} --lineage {}'.
-                    format(APPLICATION, COLLECTION, obs_id, external_url,
-                           plugin, plugin, output_temp_file.name,
-                           lineage)).split()
-        logger.error(sys.argv)
-        gem2caom2.main_app2()
-        obs = mc.read_obs_from_file(output_temp_file.name)
-        os.unlink(output_temp_file.name)
-        return obs
+            logging.error('Wanted one observation for {}, got {}'.format(
+                obs_id, command_line_bits))
+            return None
     except Exception as e:
         logger.error('main_app {} failed for {} with {}'.format(
             APPLICATION, obs_id, e))
@@ -213,112 +190,123 @@ def _invoke_gem2caom2(external_urls, obs_id, input_file_names):
         return None
 
 
-def _initialize_content():
-    """Initialize the internal data structures that represents the
-    query list from the Gemini Science Archive.
+def _make_gem2caom2_args(obs_id):
+    """Cardinality for GEMINI."""
+    # DB - 07-03-19
+    # TEXES Spectroscopy
+    #
+    # Some special code will be needed for datalabels/planes.  There are no
+    # datalabels in the FITS header.  json metadata (limited) must be
+    # obtained with URL like
+    # https://archive.gemini.edu/jsonsummary/canonical/filepre=TX20170321_flt.2507.fits.
+    # Use TX20170321_flt.2507 as datalabel.  But NOTE:  *raw.2507.fits and
+    # *red.2507.fits are two planes of the same observation. I’d suggest we
+    # use ‘*raw*’ as the datalabel and ‘*red*’ or ‘*raw*’ as the appropriate
+    # product ID’s for the science observations.  The ‘flt’ observations do
+    # not have a ‘red’ plane.  The json document contains ‘filename’ if
+    # that’s helpful at all.  The ‘red’ files do not exist for all ‘raw’
+    # files.
 
-    observation_list structure: a dict, keys are last modified time,
-        values are a set of observation IDs with that last modified time
+    # for each file name associated with an obs id:
+    #   repair the data label (obs id)
+    #   create a product id
+    #
+    # once the data label has been repaired, check to see if there are
+    # other obs ids like the repaired one
 
-    observation_id_list structure: a dict, keys are observation ID,
-        values are a set of associated file names
-    """
-    result = _read_file('/app/data/from_paul.txt')
-    # result row structure:
-    # 0 = data label
-    # 1 = timestamp
-    # 2 = file name
-    global observation_id_list
-    temp_content = {}
-    for ii in result:
-        # re-organize to be able to answer list_observations queries
-        ol_key = _make_seconds(ii[1])
-        if ol_key in temp_content:
-            if ii[0] not in temp_content[ol_key]:
-                temp_content[ol_key].append(ii[0])
+    file_names = gofr.get_file_names(obs_id)
+    logging.error('file names are {} for {}'.format(file_names, obs_id))
+    # keep the obs ids and file names in sync for making
+    # parameters later
+    temp_params = {}
+    # keep a unique list of obs ids
+    repaired_obs_ids = set()
+    for file_name in file_names:
+        file_id = GemName.remove_extensions(file_name)
+        temp = gofr.repair_data_label(file_id)
+        repaired_obs_ids.add(temp)
+        product_id = _make_product_id(obs_id, file_id)
+        if temp in temp_params and product_id not in temp_params[temp]:
+            temp_params[temp] += [product_id, file_name]
         else:
-            temp_content[ol_key] = [ii[0]]
-        # re-organize to be able to answer get_observation queries
-        if ii[0] in observation_id_list:
-            observation_id_list[ii[0]].append(ii[2])
+            temp_params[temp] = [product_id, file_name]
+
+    result = []
+    for ii in temp_params:  # repaired obs id
+        index = 0
+        temp = CommandLineBits()
+        temp.obs_id = '{} {}'.format(COLLECTION, ii)
+
+        while index < len(temp_params[ii]):
+            temp.lineage += mc.get_lineage(
+                ARCHIVE, temp_params[ii][index], temp_params[ii][index + 1], SCHEME)
+            temp.urls += '{}{}'.format(HEADER_URL, temp_params[ii][index + 1])
+            index += 2
+            if index < len(temp_params[ii]):
+                temp.lineage += ' '
+                temp.urls += ' '
+        result.append(temp)
+    return result
+
+
+def _make_product_id(obs_id, file_id):
+    """Add the alphanumeric bits from the file id to the obs_id, to make a
+    unique product id."""
+    if gem2caom2.GemObsFileRelationship.is_processed(file_id):
+        prefix = gem2caom2.GemObsFileRelationship._get_prefix(file_id)
+        suffix = gem2caom2.GemObsFileRelationship._get_suffix(file_id)
+        if len(prefix) > 0:
+            removals = [prefix] + suffix
         else:
-            observation_id_list[ii[0]] = [ii[2]]
-
-    # this structure means an observation ID occurs more than once with
-    # different last modified times
-    global observation_list
-    observation_list = collections.OrderedDict(sorted(temp_content.items(),
-                                                      key=lambda t: t[0]))
-    logger.debug('Observation list initialized in memory.')
-
-
-def _read_file(fqn):
-    """Read the .txt file from Gemini, and make it prettier ...
-    where prettier means stripping whitespace, query output text, and
-    making an ISO 8601 timestamp from something that looks like this:
-    ' 2018-12-17 18:19:27.334144+00 '
-
-    or this:
-    ' 2018-12-17 18:19:27+00 '
-
-    :return a list of lists, where the inner list consists of an
-        observation ID, a last modified date/time, and a file name.
-
-    File structure indexes:
-    0 == data label
-    1 == file name
-    3 == last modified date/time
-    """
-    results = []
-    try:
-        with open(fqn) as f:
-            for row in f:
-                temp = row.split('|')
-                if len(temp) > 1 and 'data_label' not in row:
-                    time_string = temp[3].strip().replace(' ', 'T')
-                    if len(temp[0].strip()) > 1:
-                        results.append(
-                            [temp[0].strip(), time_string, temp[1].strip()])
-                    else:
-                        # no data label in the file, so use the file name
-                        results.append(
-                            [temp[1].strip(), time_string, temp[1].strip()])
-
-    except Exception as e:
-        logger.error('Could not read from csv file {}'.format(fqn))
-        raise RuntimeError(e)
-    return results
+            removals = suffix
+        # take prefixes and suffixes off the obs id, in whatever form it might
+        # exist
+        repaired = obs_id
+        for ii in removals:
+            repaired = repaired.split(ii, 1)[0]
+            repaired = repaired.split(ii.upper(), 1)[0]
+            repaired = repaired.rstrip('-')
+            repaired = repaired.rstrip('_')
+        # put prefixes and suffixes back, all as suffixes, in upper case, with
+        # dashes
+        result = '-'.join(ii.upper() for ii in removals)
+        logging.error('result is {}'.format(result))
+        result = repaired if len(result) == 0 else repaired + '-' + result
+    else:
+        result = obs_id
+        logging.error('unprocessed {}'.format(file_id))
+    return result
 
 
-def _make_seconds(from_time):
-    """Deal with the different time formats in the Gemini-supplied file
-    to get the number of seconds since the epoch, to serve as an
-    ordering index for the list of observation IDs.
+class CommandLineBits(object):
+    """Convenience class to keep the bits of command-line that are
+    inter-connected together."""
 
-    The obs id file has the timezone information as +00, strip that for
-    returned results.
-    """
-    index = from_time.index('+00')
-    try:
-        seconds_since_epoch = datetime.strptime(from_time[:index],
-                                                '%Y-%m-%dT%H:%M:%S.%f')
-    except ValueError as e:
-        seconds_since_epoch = datetime.strptime(from_time[:index],
-                                                '%Y-%m-%dT%H:%M:%S')
-    return seconds_since_epoch.timestamp()
+    def __init__(self, obs_id='', lineage='', urls=''):
+        self.obs_id = obs_id
+        self.lineage = lineage
+        self.urls = urls
 
+    @property
+    def obs_id(self):
+        return self._obs_id
 
-def _subset(start_s, end_s):
-    """Get only part of the observation list, limited by timestamps."""
-    logger.debug('Timestamp endpoints are between {} and {}.'.format(
-        start_s, end_s))
-    global observation_list
-    temp = []
-    for ii in observation_list:
-        if start_s <= ii <= end_s:
-            for jj in observation_list[ii]:
-                temp.append(
-                    '{},{}'.format(jj, datetime.fromtimestamp(ii, timezone.utc).isoformat()))
-        if ii > end_s:
-            break
-    return temp
+    @obs_id.setter
+    def obs_id(self, value):
+        self._obs_id = value
+
+    @property
+    def lineage(self):
+        return self._lineage
+
+    @lineage.setter
+    def lineage(self, value):
+        self._lineage = value
+
+    @property
+    def urls(self):
+        return self._urls
+
+    @urls.setter
+    def urls(self, value):
+        self._urls = value
