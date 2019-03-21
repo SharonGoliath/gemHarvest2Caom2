@@ -98,7 +98,7 @@ def test_invoke_gem2caom2():
                 or (args.plugin != '/app/gem2caom2/gem2caom2/main_app.py') or
                 (args.module != args.plugin) or
                 (args.lineage !=
-                 ['GS-2010A-Q-36-5-246-RG/gemini:GEM/rgS20100212S0301.fits'])):
+                 ['rgS20100212S0301/gemini:GEM/rgS20100212S0301.fits'])):
             raise RuntimeError(args)
 
     if c.gofr is None:
@@ -209,36 +209,28 @@ x = {
     'GS-2002B-Q-22-13-0161': [c.CommandLineBits(
         obs_id='GEMINI GS-2002B-Q-22-13-0161',
         urls='{}{} {}{} {}{}'.format(
-            y, 'P2002DEC02_0161_SUB.0001.fits', y,
-            'P2002DEC02_0161_SUB.fits', y,
-            '2002dec02_0161.fits'),
+            y, 'P2002DEC02_0161_SUB.0001.fits', y, 'P2002DEC02_0161_SUB.fits',
+            y, '2002dec02_0161.fits'),
         lineage='{}/{}{} {}/{}{} {}/{}{}'.format(
-            'GS-2002B-Q-22-13-0161-SUB-0001', z,
-            'P2002DEC02_0161_SUB.0001.fits',
-            'GS-2002B-Q-22-13-0161-SUB', z,
-            'P2002DEC02_0161_SUB.fits',
-            'GS-2002B-Q-22-13-0161', z,
-            '2002dec02_0161.fits'))
+            'P2002DEC02_0161_SUB.0001', z, 'P2002DEC02_0161_SUB.0001.fits',
+            'P2002DEC02_0161_SUB', z, 'P2002DEC02_0161_SUB.fits',
+            '2002dec02_0161', z, '2002dec02_0161.fits'))
     ],
     'GN-2015B-Q-1-12-1003': [c.CommandLineBits(
         obs_id='GEMINI GN-2015B-Q-1-12-1003',
         urls='{}{} {}{} {}{}'.format(
-            y, 'N20150807G0044m.fits', y,
-            'N20150807G0044i.fits', y,
+            y, 'N20150807G0044m.fits', y, 'N20150807G0044i.fits', y,
             'N20150807G0044.fits', ),
         lineage='{}/{}{} {}/{}{} {}/{}{}'.format(
-            'GN-2015B-Q-1-12-1003-M', z,
-            'N20150807G0044m.fits',
-            'GN-2015B-Q-1-12-1003-I', z,
-            'N20150807G0044i.fits',
-            'GN-2015B-Q-1-12-1003', z,
+            'N20150807G0044m', z, 'N20150807G0044m.fits', 'N20150807G0044i', z,
+            'N20150807G0044i.fits', 'N20150807G0044', z,
             'N20150807G0044.fits'))
     ],
     'GS-2010A-Q-36-5-246-RG': [c.CommandLineBits(
         obs_id='GEMINI GS-2010A-Q-36-5-246',
         urls='{}{}'.format(y, 'rgS20100212S0301.fits'),
-        lineage='{}/{}{}'.format(
-            'GS-2010A-Q-36-5-246-RG', z, 'rgS20100212S0301.fits'))
+        lineage='{}/{}{}'.format('rgS20100212S0301', z,
+                                 'rgS20100212S0301.fits'))
     ]
 }
 
@@ -262,49 +254,3 @@ def test_make_gem2caom2_args():
             assert jj.urls == x[ii][index].urls, \
                 'urls {} {}'.format(ii, jj)
             index += 1
-
-
-@pytest.mark.skipif(not sys.version.startswith(PY_VERSION),
-                    reason='support 3.6 only')
-def test_make_product_id():
-    test_file = 'P2002DEC02_0161_SUB'
-    test_prefix = gem2caom2.GemObsFileRelationship._get_prefix(test_file)
-    assert test_prefix == '', 'prefix wrong {}'.format(test_prefix)
-    test_suffix = gem2caom2.GemObsFileRelationship._get_suffix(test_file)
-    assert test_suffix == ['SUB'], 'suffix wrong {}'.format(test_suffix)
-    test_result = c._make_product_id('GS-2002B-Q-22-13-0161', test_file)
-    assert test_result == 'GS-2002B-Q-22-13-0161-SUB', \
-        'product id wrong {}'.format(test_result)
-
-    test_file = 'P2002DEC02_0161_SUB.0001'
-    test_prefix = gem2caom2.GemObsFileRelationship._get_prefix(test_file)
-    assert test_prefix == '', 'prefix wrong {}'.format(test_prefix)
-    test_suffix = gem2caom2.GemObsFileRelationship._get_suffix(test_file)
-    assert test_suffix == ['SUB-0001'], 'suffix wrong {}'.format(test_suffix)
-    test_result = c._make_product_id('GS-2002B-Q-22-13-0161', test_file)
-    assert test_result == 'GS-2002B-Q-22-13-0161-SUB-0001', \
-        'product id wrong {}'.format(test_result)
-
-    test_file = 'N20150807G0044i'
-    test_prefix = gem2caom2.GemObsFileRelationship._get_prefix(test_file)
-    assert test_prefix == '', 'prefix wrong {}'.format(test_prefix)
-    test_suffix = gem2caom2.GemObsFileRelationship._get_suffix(test_file)
-    assert test_suffix == ['i'], 'suffix wrong {}'.format(test_suffix)
-    test_result = c._make_product_id('GN-2015B-Q-1-12-1003', test_file)
-    assert test_result == 'GN-2015B-Q-1-12-1003-I', \
-        'product id wrong {}'.format(test_result)
-
-    # test the 'do not change' the data label option
-    test_file = 'N20150807G0044'
-    test_prefix = gem2caom2.GemObsFileRelationship._get_prefix(test_file)
-    assert test_prefix == '', 'prefix wrong {}'.format(test_prefix)
-    test_suffix = gem2caom2.GemObsFileRelationship._get_suffix(test_file)
-    assert test_suffix == [], 'suffix wrong {}'.format(test_suffix)
-    test_result = c._make_product_id('GN-2015B-Q-1-12-1003', test_file)
-    assert test_result == 'GN-2015B-Q-1-12-1003', \
-        'product id wrong {}'.format(test_result)
-
-    test_file = '2002dec02_0161'
-    test_result = c._make_product_id('GS-2002B-Q-22-13-0161', test_file)
-    assert test_result == 'GS-2002B-Q-22-13-0161', \
-        'product id wrong {}'.format(test_result)

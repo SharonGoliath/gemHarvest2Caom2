@@ -225,7 +225,7 @@ def _make_gem2caom2_args(obs_id):
         file_id = GemName.remove_extensions(file_name)
         temp = gofr.repair_data_label(file_id)
         repaired_obs_ids.add(temp)
-        product_id = _make_product_id(obs_id, file_id)
+        product_id = file_id
         if temp in temp_params and product_id not in temp_params[temp]:
             temp_params[temp] += [product_id, file_name]
         else:
@@ -246,35 +246,6 @@ def _make_gem2caom2_args(obs_id):
                 temp.lineage += ' '
                 temp.urls += ' '
         result.append(temp)
-    return result
-
-
-def _make_product_id(obs_id, file_id):
-    """Add the alphanumeric bits from the file id to the obs_id, to make a
-    unique product id."""
-    if gem2caom2.GemObsFileRelationship.is_processed(file_id):
-        prefix = gem2caom2.GemObsFileRelationship._get_prefix(file_id)
-        suffix = gem2caom2.GemObsFileRelationship._get_suffix(file_id)
-        if len(prefix) > 0:
-            removals = [prefix] + suffix
-        else:
-            removals = suffix
-        # take prefixes and suffixes off the obs id, in whatever form it might
-        # exist
-        repaired = obs_id
-        for ii in removals:
-            repaired = repaired.split(ii, 1)[0]
-            repaired = repaired.split(ii.upper(), 1)[0]
-            repaired = repaired.rstrip('-')
-            repaired = repaired.rstrip('_')
-        # put prefixes and suffixes back, all as suffixes, in upper case, with
-        # dashes
-        result = '-'.join(ii.upper() for ii in removals)
-        logging.error('result is {}'.format(result))
-        result = repaired if len(result) == 0 else repaired + '-' + result
-    else:
-        result = obs_id
-        logging.error('unprocessed {}'.format(file_id))
     return result
 
 
