@@ -67,7 +67,6 @@
 # ***********************************************************************
 #
 
-import collections
 import logging
 import os
 import sys
@@ -77,18 +76,8 @@ from caom2pipe import manage_composable as mc
 
 import gem2caom2
 from gem2caom2 import APPLICATION, COLLECTION, SCHEME, ARCHIVE, GemName
-from gem2caom2 import GemObsFileRelationship
+from gem2caom2 import GemObsFileRelationship, CommandLineBits
 
-HEADER_URL = 'https://archive.gemini.edu/fullheader/'
-
-# in-memory structure that contains the obs-id, last modified information
-# by timestamp, making it possible to identify time-bounded lists of
-# observations
-observation_list = collections.OrderedDict()
-# in-memory structure that contains the file name to obs id relationship,
-# making it possible to execute queries against the Gemini Science Archive
-# by observation ID
-observation_id_list = {}
 logger = logging.getLogger('caom2proxy')
 logger.setLevel(logging.DEBUG)
 # use lazy initialization to read in the Gemini-supplied file, and
@@ -117,7 +106,7 @@ def list_observations(start=None, end=None, maxrec=None):
     """
 
     global gofr
-    if gofr == None:
+    if gofr is None:
         gofr = GemObsFileRelationship('/app/data/from_paul.txt')
 
     temp = gofr.subset(start, end, maxrec)
@@ -134,23 +123,8 @@ def get_observation(obs_id):
     """
 
     global gofr
-    if gofr == None:
+    if gofr is None:
         gofr = GemObsFileRelationship('/app/data/from_paul.txt')
-
-    if obs_id not in observation_id_list:
-        logger.error(
-            'Could not find file name for observation id {}'.format(obs_id))
-        return None
-
-    # query Gemini Archive for file headers based on the file id (most reliable
-    # endpoint
-
-    # file_names = observation_id_list[obs_id]
-    # file_names = gofr.get_file_names(obs_id)
-    # file_urls = []
-    # for file_name in file_names:
-    #     file_urls.append(
-    #         'https://archive.gemini.edu/fullheader/{}'.format(file_name))
 
     obs = _invoke_gem2caom2(obs_id)
     if obs is None:
@@ -164,7 +138,7 @@ def _invoke_gem2caom2(obs_id):
         plugin = os.path.join(gem2caom2.__path__[0], 'main_app.py')
         logger.error(plugin)
         output_temp_file = tempfile.NamedTemporaryFile(delete=False)
-        command_line_bits = _make_gem2caom2_args(obs_id)
+        command_line_bits = gofr.get_args(obs_id)
         if len(command_line_bits) == 1:
             sys.argv = ('{} --no_validate --observation {} '
                         '--external_url {} '
@@ -188,96 +162,3 @@ def _invoke_gem2caom2(obs_id):
         import traceback
         logging.error(traceback.format_exc())
         return None
-
-
-def _make_gem2caom2_args(obs_id):
-    """Cardinality for GEMINI."""
-    # DB - 07-03-19
-    # TEXES Spectroscopy
-    #
-    # Some special code will be needed for datalabels/planes.  There are no
-    # datalabels in the FITS header.  json metadata (limited) must be
-    # obtained with URL like
-    # https://archive.gemini.edu/jsonsummary/canonical/filepre=TX20170321_flt.2507.fits.
-    # Use TX20170321_flt.2507 as datalabel.  But NOTE:  *raw.2507.fits and
-    # *red.2507.fits are two planes of the same observation. I’d suggest we
-    # use ‘*raw*’ as the datalabel and ‘*red*’ or ‘*raw*’ as the appropriate
-    # product ID’s for the science observations.  The ‘flt’ observations do
-    # not have a ‘red’ plane.  The json document contains ‘filename’ if
-    # that’s helpful at all.  The ‘red’ files do not exist for all ‘raw’
-    # files.
-
-    # for each file name associated with an obs id:
-    #   repair the data label (obs id)
-    #   create a product id
-    #
-    # once the data label has been repaired, check to see if there are
-    # other obs ids like the repaired one
-
-    file_names = gofr.get_file_names(obs_id)
-    logging.error('file names are {} for {}'.format(file_names, obs_id))
-    # keep the obs ids and file names in sync for making
-    # parameters later
-    temp_params = {}
-    # keep a unique list of obs ids
-    repaired_obs_ids = set()
-    for file_name in file_names:
-        file_id = GemName.remove_extensions(file_name)
-        temp = gofr.repair_data_label(file_id)
-        repaired_obs_ids.add(temp)
-        product_id = file_id
-        if temp in temp_params and product_id not in temp_params[temp]:
-            temp_params[temp] += [product_id, file_name]
-        else:
-            temp_params[temp] = [product_id, file_name]
-
-    result = []
-    for ii in temp_params:  # repaired obs id
-        index = 0
-        temp = CommandLineBits()
-        temp.obs_id = '{} {}'.format(COLLECTION, ii)
-
-        while index < len(temp_params[ii]):
-            temp.lineage += mc.get_lineage(
-                ARCHIVE, temp_params[ii][index], temp_params[ii][index + 1], SCHEME)
-            temp.urls += '{}{}'.format(HEADER_URL, temp_params[ii][index + 1])
-            index += 2
-            if index < len(temp_params[ii]):
-                temp.lineage += ' '
-                temp.urls += ' '
-        result.append(temp)
-    return result
-
-
-class CommandLineBits(object):
-    """Convenience class to keep the bits of command-line that are
-    inter-connected together."""
-
-    def __init__(self, obs_id='', lineage='', urls=''):
-        self.obs_id = obs_id
-        self.lineage = lineage
-        self.urls = urls
-
-    @property
-    def obs_id(self):
-        return self._obs_id
-
-    @obs_id.setter
-    def obs_id(self, value):
-        self._obs_id = value
-
-    @property
-    def lineage(self):
-        return self._lineage
-
-    @lineage.setter
-    def lineage(self, value):
-        self._lineage = value
-
-    @property
-    def urls(self):
-        return self._urls
-
-    @urls.setter
-    def urls(self, value):
-        self._urls = value
