@@ -75,7 +75,8 @@ import tempfile
 from caom2pipe import manage_composable as mc
 
 import gem2caom2
-from gem2caom2 import APPLICATION, COLLECTION, SCHEME, ARCHIVE, GemName
+import gem2caom2.external_metadata as em
+from gem2caom2 import APPLICATION, SCHEME, ARCHIVE, GemName
 from gem2caom2 import GemObsFileRelationship, CommandLineBits
 
 logger = logging.getLogger('caom2proxy')
@@ -83,6 +84,8 @@ logger.setLevel(logging.DEBUG)
 # use lazy initialization to read in the Gemini-supplied file, and
 # make it's content into an in-memory searchable collection.
 gofr = None
+
+COLLECTION = 'GEMINI'
 
 
 def list_observations(start=None, end=None, maxrec=None):
@@ -105,11 +108,10 @@ def list_observations(start=None, end=None, maxrec=None):
     to support this endpoint query.
     """
 
-    global gofr
-    if gofr is None:
-        gofr = GemObsFileRelationship('/app/data/from_paul.txt')
+    if em.gofr is None:
+        em.gofr = GemObsFileRelationship('/app/data/from_paul.txt')
 
-    temp = gofr.subset(start, end, maxrec)
+    temp = em.gofr.subset(start, end, maxrec)
     for ii in temp:
         yield '{}\n'.format(ii)
 
@@ -122,9 +124,8 @@ def get_observation(obs_id):
     such observation does not exist
     """
 
-    global gofr
-    if gofr is None:
-        gofr = GemObsFileRelationship('/app/data/from_paul.txt')
+    if em.gofr is None:
+        em.gofr = GemObsFileRelationship('/app/data/from_paul.txt')
 
     obs = _invoke_gem2caom2(obs_id)
     if obs is None:
@@ -136,9 +137,8 @@ def get_observation(obs_id):
 def _invoke_gem2caom2(obs_id):
     try:
         plugin = os.path.join(gem2caom2.__path__[0], 'main_app.py')
-        logger.error(plugin)
         output_temp_file = tempfile.NamedTemporaryFile(delete=False)
-        command_line_bits = gofr.get_args(obs_id)
+        command_line_bits = em.gofr.get_args(obs_id)
         if len(command_line_bits) == 1:
             sys.argv = ('{} --no_validate --observation {} '
                         '--external_url {} '
