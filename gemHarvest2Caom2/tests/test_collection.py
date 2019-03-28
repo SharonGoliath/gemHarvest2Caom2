@@ -67,6 +67,7 @@
 # ***********************************************************************
 #
 #
+import os
 import pytest
 import sys
 
@@ -80,6 +81,8 @@ import gem2caom2
 from gemHarvest2Caom2 import collection as c
 import gem2caom2.external_metadata as em
 
+THIS_DIR = os.path.dirname(os.path.realpath(__file__))
+TEST_DATA_DIR = os.path.join(THIS_DIR, 'data')
 PY_VERSION = '3.6'
 
 
@@ -118,6 +121,19 @@ def test_invoke_gem2caom2():
         assert result is not None, 'should be a mocked result'
         assert result.max_last_modified is not None, 'max last modified not set'
         assert result.last_modified is not None, 'last modified not set'
+        assert result.last_modified.timestamp() == 0.0, 'wrong last modified'
     finally:
         gem2caom2.main_app2 = main_app_orig
         caom2pipe.manage_composable.read_obs_from_file = read_obs_orig
+
+
+@pytest.mark.skipif(not sys.version.startswith(PY_VERSION),
+                    reason='support 3.6 only')
+def test_update_last_modified():
+    test_obs = caom2pipe.manage_composable.read_obs_from_file(
+        os.path.join(TEST_DATA_DIR, 'test_obs.xml'))
+    assert test_obs.last_modified is None, 'wrong preconditions'
+    c._update_last_modified(test_obs)
+    assert test_obs.last_modified is not None, 'no result'
+    assert test_obs.last_modified.timestamp() == 1539848715.277555, \
+        'wrong result'

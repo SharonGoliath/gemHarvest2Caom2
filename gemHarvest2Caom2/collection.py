@@ -73,7 +73,6 @@ import sys
 import tempfile
 
 from datetime import datetime
-from datetime import timedelta
 
 from caom2pipe import manage_composable as mc
 from caom2pipe import execute_composable as ex_comp
@@ -167,14 +166,15 @@ def _invoke_gem2caom2(obs_id):
 
 
 def _update_last_modified(obs):
-    max_last_modified = timedelta()
+    max_last_modified = datetime(1970, 1, 1).timestamp()
     for p in obs.planes:
         for a in obs.planes[p].artifacts:
             file_name = ex_comp.CaomName(
                 obs.planes[p].artifacts[a].uri).file_name
-            ts = em.gofr.get_timestamp(file_name)
+            file_id = GemName.remove_extensions(file_name)
+            ts = em.gofr.get_timestamp(file_id)
             max_last_modified = max(ts, max_last_modified)
-            ts_dt = datetime.fromtimestamp(ts.total_seconds())
+            ts_dt = datetime.fromtimestamp(ts)
             obs.planes[p].max_last_modified = ts_dt
             obs.planes[p].artifacts[a].max_last_modified = ts_dt
             obs.planes[p].last_modified = ts_dt
@@ -185,6 +185,6 @@ def _update_last_modified(obs):
                 for c in obs.planes[p].artifacts[a].parts[pt].chunks:
                     c.max_last_modified = ts_dt
                     c.last_modified = ts_dt
-    max_dt = datetime.fromtimestamp(max_last_modified.total_seconds())
+    max_dt = datetime.fromtimestamp(max_last_modified)
     obs.max_last_modified = max_dt
     obs.last_modified = max_dt
