@@ -76,6 +76,7 @@ from datetime import datetime
 from datetime import timedelta
 
 from caom2pipe import manage_composable as mc
+from caom2pipe import execute_composable as ex_comp
 
 import gem2caom2
 import gem2caom2.external_metadata as em
@@ -169,7 +170,8 @@ def _update_last_modified(obs):
     max_last_modified = timedelta()
     for p in obs.planes:
         for a in obs.planes[p].artifacts:
-            file_name = em.CaomName(obs.planes[p].artifacts[a].uri).file_name
+            file_name = ex_comp.CaomName(
+                obs.planes[p].artifacts[a].uri).file_name
             ts = em.gofr.get_timestamp(file_name)
             max_last_modified = max(ts, max_last_modified)
             ts_dt = datetime.fromtimestamp(ts.total_seconds())
