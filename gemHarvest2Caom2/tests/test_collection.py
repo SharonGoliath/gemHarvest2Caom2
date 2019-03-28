@@ -78,6 +78,7 @@ import caom2pipe
 
 import gem2caom2
 from gemHarvest2Caom2 import collection as c
+import gem2caom2.external_metadata as em
 
 PY_VERSION = '3.6'
 
@@ -85,8 +86,7 @@ PY_VERSION = '3.6'
 @pytest.mark.skipif(not sys.version.startswith(PY_VERSION),
                     reason='support 3.6 only')
 def test_invoke_gem2caom2():
-    def read_obs_from_file_mock(fqn):
-        return SimpleObservation(collection='test', observation_id='1')
+    test_obs = SimpleObservation(collection='test', observation_id='1')
 
     def main_app2_mock():
         args = fits2caom2.get_gen_proc_arg_parser().parse_args()
@@ -101,14 +101,14 @@ def test_invoke_gem2caom2():
                  ['rgS20100212S0301/gemini:GEM/rgS20100212S0301.fits'])):
             raise RuntimeError(args)
 
-    if c.gofr is None:
-        c.gofr = gem2caom2.GemObsFileRelationship('/app/data/from_paul.txt')
+    if em.gofr is None:
+        em.gofr = gem2caom2.GemObsFileRelationship('/app/data/from_paul.txt')
 
     main_app_orig = gem2caom2.main_app2
     gem2caom2.main_app2 = Mock(side_effect=main_app2_mock)
     read_obs_orig = caom2pipe.manage_composable.read_obs_from_file
     caom2pipe.manage_composable.read_obs_from_file = Mock(
-        return_value=read_obs_from_file_mock)
+        return_value=test_obs)
 
     try:
         result = c._invoke_gem2caom2('GS-2010A-Q-36-5-246-RG')
@@ -116,6 +116,8 @@ def test_invoke_gem2caom2():
         assert caom2pipe.manage_composable.read_obs_from_file.called, \
             'read obs'
         assert result is not None, 'should be a mocked result'
+        assert result.max_last_modified is not None, 'max last modified not set'
+        assert result.last_modified is not None, 'last modified not set'
     finally:
         gem2caom2.main_app2 = main_app_orig
         caom2pipe.manage_composable.read_obs_from_file = read_obs_orig

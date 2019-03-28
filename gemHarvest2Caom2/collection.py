@@ -72,6 +72,9 @@ import os
 import sys
 import tempfile
 
+from datetime import datetime
+from datetime import timedelta
+
 from caom2pipe import manage_composable as mc
 
 import gem2caom2
@@ -81,9 +84,6 @@ from gem2caom2 import GemObsFileRelationship, CommandLineBits
 
 logger = logging.getLogger('caom2proxy')
 logger.setLevel(logging.DEBUG)
-# use lazy initialization to read in the Gemini-supplied file, and
-# make it's content into an in-memory searchable collection.
-gofr = None
 
 COLLECTION = 'GEMINI'
 
@@ -151,6 +151,7 @@ def _invoke_gem2caom2(obs_id):
             gem2caom2.main_app2()
             obs = mc.read_obs_from_file(output_temp_file.name)
             os.unlink(output_temp_file.name)
+            _update_last_modified(obs)
             return obs
         else:
             logging.error('Wanted one observation for {}, got {}'.format(
@@ -162,3 +163,26 @@ def _invoke_gem2caom2(obs_id):
         import traceback
         logging.error(traceback.format_exc())
         return None
+
+
+def _update_last_modified(obs):
+    max_last_modified = timedelta()
+    for p in obs.planes:
+        for a in obs.planes[p].artifacts:
+            file_name = em.CaomName(obs.planes[p].artifacts[a].uri).file_name
+            ts = em.gofr.get_timestamp(file_name)
+            max_last_modified = max(ts, max_last_modified)
+            ts_dt = datetime.fromtimestamp(ts.total_seconds())
+            obs.planes[p].max_last_modified = ts_dt
+            obs.planes[p].artifacts[a].max_last_modified = ts_dt
+            obs.planes[p].last_modified = ts_dt
+            obs.planes[p].artifacts[a].last_modified = ts_dt
+            for pt in obs.planes[p].artifacts[a].parts:
+                obs.planes[p].artifacts[a].parts[pt].max_last_modified = ts_dt
+                obs.planes[p].artifacts[a].parts[pt].last_modified = ts_dt
+                for c in obs.planes[p].artifacts[a].parts[pt].chunks:
+                    c.max_last_modified = ts_dt
+                    c.last_modified = ts_dt
+    max_dt = datetime.fromtimestamp(max_last_modified.total_seconds())
+    obs.max_last_modified = max_dt
+    obs.last_modified = max_dt
