@@ -147,11 +147,17 @@ def _invoke_gem2caom2(obs_id):
                                command_line_bits[0].urls, plugin, plugin,
                                output_temp_file.name,
                                command_line_bits[0].lineage)).split()
-            logger.error(sys.argv)
+            logger.info(sys.argv)
             gem2caom2.main_app2()
-            obs = mc.read_obs_from_file(output_temp_file.name)
+            out_file_stat = os.stat(output_temp_file.name)
+            if out_file_stat.st_size > 0:
+                obs = mc.read_obs_from_file(output_temp_file.name)
+                _update_last_modified(obs)
+            else:
+                logging.error(
+                    'Did not generate an observation for {}'.format(obs_id))
+                obs = None
             os.unlink(output_temp_file.name)
-            _update_last_modified(obs)
             return obs
         else:
             logging.error('Wanted one observation for {}, got {}'.format(
