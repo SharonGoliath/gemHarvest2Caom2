@@ -116,12 +116,9 @@ def test_invoke_gem2caom2():
     try:
         result = c._invoke_gem2caom2('GS-2010A-Q-36-5-246-RG')
         gem2caom2.main_app2.assert_called_with(), 'command line failure'
-        assert caom2pipe.manage_composable.read_obs_from_file.called, \
-            'read obs'
-        assert result is not None, 'should be a mocked result'
-        assert result.max_last_modified is not None, 'max last modified not set'
-        assert result.last_modified is not None, 'last modified not set'
-        assert result.last_modified.timestamp() == 0.0, 'wrong last modified'
+        assert not caom2pipe.manage_composable.read_obs_from_file.called, \
+            'read obs should not be called'
+        assert result is None, 'should be executing failure case'
     finally:
         gem2caom2.main_app2 = main_app_orig
         caom2pipe.manage_composable.read_obs_from_file = read_obs_orig
