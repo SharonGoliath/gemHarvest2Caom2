@@ -137,16 +137,20 @@ def get_observation(obs_id):
 def _invoke_gem2caom2(obs_id):
     try:
         plugin = os.path.join(gem2caom2.__path__[0], 'main_app.py')
-        output_temp_file = tempfile.NamedTemporaryFile(delete=False)
         command_line_bits = em.gofr.get_args(obs_id)
-        if len(command_line_bits) == 1:
+        if len(command_line_bits) > 1:
+            msg = ' '.join(ii.obs_id for ii in command_line_bits)
+            logging.warning(
+                'Wanted one observation for {}, got {} with {}'.format(
+                    obs_id, len(command_line_bits), msg))
+        for bit in command_line_bits:
+            output_temp_file = tempfile.NamedTemporaryFile(delete=False)
             sys.argv = ('{} --no_validate --observation {} '
                         '--external_url {} '
                         '--plugin {} --module {} --out {} --lineage {}'.
-                        format(APPLICATION, command_line_bits[0].obs_id,
-                               command_line_bits[0].urls, plugin, plugin,
-                               output_temp_file.name,
-                               command_line_bits[0].lineage)).split()
+                        format(APPLICATION, bit.obs_id, bit.urls, plugin,
+                               plugin, output_temp_file.name,
+                               bit.lineage)).split()
             logger.info(sys.argv)
             gem2caom2.main_app2()
             out_file_stat = os.stat(output_temp_file.name)
@@ -159,10 +163,6 @@ def _invoke_gem2caom2(obs_id):
                 obs = None
             os.unlink(output_temp_file.name)
             return obs
-        else:
-            logging.error('Wanted one observation for {}, got {}'.format(
-                obs_id, command_line_bits))
-            return None
     except Exception as e:
         logger.error('main_app {} failed for {} with {}'.format(
             APPLICATION, obs_id, e))
